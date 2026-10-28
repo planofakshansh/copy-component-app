@@ -1,6 +1,6 @@
 import { XMLBuilder, XMLParser } from "fast-xml-parser";
 import { guidsEqual, normalizeGuid } from "../guid";
-import { DEFAULT_DEVICE_ID, type Rendering } from "../types";
+import { DEFAULT_DEVICE_ID, type Rendering, type RenderingPosition } from "../types";
 
 /**
  * `__Final Renderings` holds an XML *delta* against the shared layout, not a
@@ -22,6 +22,12 @@ const RENDERING_ID = "@_s:id";
 const DATASOURCE = "@_s:ds";
 const PARAMETERS = "@_s:par";
 const PLACEHOLDER = "@_s:ph";
+
+/** Delta instructions, kept out of `extraAttributes` so they never ride along onto a copy. */
+const BEFORE = "@_p:before";
+const AFTER = "@_p:after";
+/** `<r uid="…"><p:d /></r>` is how a delta removes a rendering its base supplies. */
+const DELETE_TAG = "p:d";
 
 const parserOptions = {
   ignoreAttributes: false,
@@ -61,12 +67,12 @@ function findByTag(nodes: OrderedNode[], tag: string): OrderedNode | undefined {
 
 function toRendering(node: OrderedNode): Rendering {
   const attrs = attrsOf(node);
-  const known = new Set([UID, RENDERING_ID, DATASOURCE, PARAMETERS, PLACEHOLDER]);
+  const known = new Set([UID, RENDERING_ID, DATASOURCE, PARAMETERS, PLACEHOLDER, BEFORE, AFTER]);
   const extraAttributes: Record<string, string> = {};
   for (const [name, value] of Object.entries(attrs)) {
     if (!known.has(name)) extraAttributes[name] = value;
   }
-  return {
+  const rendering: Rendering = {
     uid: attrs[UID] ?? "",
     renderingItemId: attrs[RENDERING_ID] ?? "",
     placeholderKey: attrs[PLACEHOLDER] ?? "",
@@ -74,12 +80,70 @@ function toRendering(node: OrderedNode): Rendering {
     parameters: attrs[PARAMETERS] ?? "",
     extraAttributes,
   };
+  if (attrs[BEFORE] || attrs[AFTER]) {
+    rendering.position = {
+      ...(attrs[BEFORE] ? { before: attrs[BEFORE] } : {}),
+      ...(attrs[AFTER] ? { after: attrs[AFTER] } : {}),
+    };
+  }
+  if (childrenOf(node).some((child) => tagOf(child) === DELETE_TAG)) rendering.deleted = true;
+  return rendering;
 }
 
-function toNode(rendering: Rendering): OrderedNode {
+/** A copy without the delta-only markers: what a resolved or relocated rendering should look like. */
+export function withoutDeltaMarks(rendering: Rendering): Rendering {
+  const copy = { ...rendering };
+  delete copy.position;
+  delete copy.deleted;
+  return copy;
+}
+
+/** The selector a delta uses to point at a sibling rendering. */
+export function uidSelector(uid: string): string {
+  return `r[@uid='${uid}']`;
+}
+
+/** The uid a selector like `r[@uid='{…}']` points at; null for `*` and anything unrecognised. */
+function selectorUid(selector: string | undefined): string | null {
+  const match = /^\s*r\[\s*@uid\s*=\s*(['"])(.+?)\1\s*\]\s*$/.exec(selector ?? "");
+  return match ? match[2] : null;
+}
+
+/**
+ * Where an entry lands among its siblings: the index to insert at, or -1 for
+ * "append". It is the one reading of `p:before` / `p:after` shared by the
+ * merge that resolves a layout and the writer that edits a complete one, so
+ * the two cannot disagree about order. A selector that matches nothing falls
+ * back to appending, as Sitecore does.
+ */
+export function insertionIndex<T>(
+  siblings: T[],
+  uidOf: (sibling: T) => string,
+  position: RenderingPosition | undefined,
+): number {
+  const indexOf = (selector: string | undefined) => {
+    const uid = selectorUid(selector);
+    return uid ? siblings.findIndex((sibling) => guidsEqual(uidOf(sibling), uid)) : -1;
+  };
+
+  if (position?.before !== undefined) {
+    if (position.before.trim() === "*") return 0;
+    const at = indexOf(position.before);
+    if (at >= 0) return at;
+  }
+  if (position?.after !== undefined) {
+    const at = indexOf(position.after);
+    if (at >= 0) return at + 1;
+  }
+  return -1;
+}
+
+function toNode(rendering: Rendering, writePosition: boolean): OrderedNode {
   // Sitecore reads attributes by name, but keeping uid first and the s:*
   // attributes in their usual order makes the stored XML diffable by hand.
   const attrs: Record<string, string> = { [UID]: rendering.uid };
+  if (writePosition && rendering.position?.before) attrs[BEFORE] = rendering.position.before;
+  if (writePosition && rendering.position?.after) attrs[AFTER] = rendering.position.after;
   if (rendering.renderingItemId) attrs[RENDERING_ID] = rendering.renderingItemId;
   if (rendering.dataSource) attrs[DATASOURCE] = rendering.dataSource;
   if (rendering.parameters) attrs[PARAMETERS] = rendering.parameters;
@@ -136,9 +200,10 @@ export function primaryDeviceId(layout: ParsedLayout): string {
 }
 
 /**
- * Append renderings to a layout field value, preserving whatever is already
- * there. An empty or unparseable value yields a fresh delta so the page keeps
- * inheriting its base presentation.
+ * Add renderings to a layout field value, preserving whatever is already
+ * there. They go at the end unless a rendering carries a `position`. An empty
+ * or unparseable value yields a fresh delta so the page keeps inheriting its
+ * base presentation.
  */
 export function appendRenderings(
   existingXml: string | null | undefined,
@@ -147,7 +212,6 @@ export function appendRenderings(
 ): string {
   if (renderings.length === 0) return existingXml ?? "";
 
-  const newNodes = renderings.map(toNode);
   let tree: OrderedNode[] = [];
   if (existingXml && existingXml.trim()) {
     try {
@@ -163,6 +227,12 @@ export function appendRenderings(
     tree = [root];
   }
 
+  // `p:before` / `p:after` are instructions to the delta engine. A complete
+  // layout has no such thing — document order *is* the order — and does not
+  // necessarily declare the `p` prefix, so writing one there would produce
+  // malformed XML rather than a position.
+  const isDelta = attrsOf(root)["@_p:p"] === "1";
+
   const deviceNodes = childrenOf(root);
   let device = deviceNodes.find(
     (n) => tagOf(n) === "d" && guidsEqual(attrsOf(n)["@_id"] ?? "", deviceId),
@@ -172,6 +242,14 @@ export function appendRenderings(
     deviceNodes.push(device);
   }
 
-  childrenOf(device).push(...newNodes);
+  const entries = childrenOf(device);
+  for (const rendering of renderings) {
+    const node = toNode(rendering, isDelta);
+    const at = isDelta
+      ? -1
+      : insertionIndex(entries, (entry) => attrsOf(entry)["@_uid"] ?? "", rendering.position);
+    if (at >= 0) entries.splice(at, 0, node);
+    else entries.push(node);
+  }
   return builder.build(tree);
 }

@@ -15,11 +15,14 @@ import { keysEqual, usedPlaceholderKeys } from "@/src/lib/layout/placeholders";
 import { AuthoringClient } from "@/src/lib/marketplace/authoring";
 import { useMarketplaceClient } from "@/src/lib/marketplace/useMarketplaceClient";
 import { usePagesContext } from "@/src/lib/marketplace/usePagesContext";
-import type {
-  CopyResult,
-  PageSummary,
-  PlaceholderChoice,
-  Rendering,
+import { useRenderingDetails } from "@/src/lib/marketplace/useRenderingDetails";
+import {
+  POSITION_END,
+  type CopyResult,
+  type PageSummary,
+  type PlaceholderChoice,
+  type PositionChoice,
+  type Rendering,
 } from "@/src/lib/types";
 
 type Stage = "pick-component" | "pick-targets" | "placeholders" | "running" | "done";
@@ -33,9 +36,9 @@ export function CopyComponentPanel() {
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
   const [targets, setTargets] = useState<PageSummary[]>([]);
   const [choices, setChoices] = useState<Record<string, PlaceholderChoice>>({});
+  const [positions, setPositions] = useState<Record<string, PositionChoice>>({});
   const [targetPlaceholders, setTargetPlaceholders] = useState<TargetPlaceholders[]>([]);
   const [placeholdersLoading, setPlaceholdersLoading] = useState(false);
-  const [names, setNames] = useState<Map<string, string>>(new Map());
   const [siteRoot, setSiteRoot] = useState<string | null>(null);
   const [fetchedRenderings, setFetchedRenderings] = useState<Rendering[]>([]);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -51,6 +54,16 @@ export function CopyComponentPanel() {
     const fromPages = parsePresentationDetails(context?.presentationDetails);
     return fromPages.length > 0 ? fromPages : fetchedRenderings;
   }, [context?.presentationDetails, fetchedRenderings]);
+
+  // Names and titles make the picker readable: the layout stores only rendering
+  // ids and datasource references, so without them an author would be choosing
+  // between a dozen guids.
+  const { names, hints, hintsError } = useRenderingDetails(
+    authoring,
+    context ? { path: context.pagePath, itemId: context.pageId } : null,
+    context?.language,
+    renderings,
+  );
 
   // `pages.context` usually carries the page's presentation, but the field is
   // typed loosely and is not guaranteed to be populated. Falling back to the
@@ -116,23 +129,6 @@ export function CopyComponentPanel() {
     };
   }, [client]);
 
-  // Resolve rendering ids to component names so the picker is readable.
-  useEffect(() => {
-    if (!authoring || renderings.length === 0) return;
-    let active = true;
-    authoring
-      .getItemNames(renderings.map((r) => r.renderingItemId))
-      .then((resolved) => {
-        if (active) setNames(resolved);
-      })
-      .catch(() => {
-        // Names are a nicety — the picker still works with the fallback label.
-      });
-    return () => {
-      active = false;
-    };
-  }, [authoring, renderings]);
-
   // Scope the target picker to the site the author is working in.
   useEffect(() => {
     if (!authoring || !context?.pagePath) return;
@@ -155,6 +151,7 @@ export function CopyComponentPanel() {
     setSelectedUid(null);
     setTargets([]);
     setChoices({});
+    setPositions({});
     setResults([]);
     setRunError(null);
     setFetchedRenderings([]);
@@ -173,9 +170,10 @@ export function CopyComponentPanel() {
     for (const page of targets) {
       try {
         const { shared, final } = await authoring.getLayoutFields(page.path, context?.language);
-        const available = usedPlaceholderKeys(resolveLayout(shared, final));
+        const targetRenderings = resolveLayout(shared, final);
+        const available = usedPlaceholderKeys(targetRenderings);
         const sameKeyExists = available.some((key) => keysEqual(key, sourceKey));
-        loaded.push({ page, available, sameKeyExists });
+        loaded.push({ page, available, sameKeyExists, renderings: targetRenderings });
         // Default to the source key where it exists — that is the "same
         // placeholder" answer, and it is right far more often than not.
         nextChoices[page.itemId] =
@@ -187,6 +185,7 @@ export function CopyComponentPanel() {
           page,
           available: [],
           sameKeyExists: false,
+          renderings: [],
           error: error instanceof Error ? error.message : String(error),
         });
         nextChoices[page.itemId] = { kind: "same" };
@@ -195,8 +194,21 @@ export function CopyComponentPanel() {
 
     setTargetPlaceholders(loaded);
     setChoices(nextChoices);
+    setPositions({});
     setPlaceholdersLoading(false);
   }, [authoring, subtree, targets, context?.language]);
+
+  // A position is a place in one particular placeholder, so choosing a
+  // different placeholder sends it back to the end rather than carrying over a
+  // component that is not in the new one.
+  const changePlaceholder = useCallback((itemId: string, choice: PlaceholderChoice) => {
+    setChoices((prev) => ({ ...prev, [itemId]: choice }));
+    setPositions((prev) => ({ ...prev, [itemId]: POSITION_END }));
+  }, []);
+
+  const changePosition = useCallback((itemId: string, position: PositionChoice) => {
+    setPositions((prev) => ({ ...prev, [itemId]: position }));
+  }, []);
 
   const run = useCallback(async () => {
     if (!authoring || !subtree || !context) return;
@@ -215,6 +227,7 @@ export function CopyComponentPanel() {
         targets: targets.map((page) => ({
           page,
           placeholder: choices[page.itemId] ?? { kind: "same" },
+          position: positions[page.itemId] ?? POSITION_END,
         })),
         language: context.language,
       });
@@ -224,13 +237,14 @@ export function CopyComponentPanel() {
     } finally {
       setStage("done");
     }
-  }, [authoring, subtree, context, targets, choices]);
+  }, [authoring, subtree, context, targets, choices, positions]);
 
   const startOver = useCallback(() => {
     setStage("pick-component");
     setSelectedUid(null);
     setTargets([]);
     setChoices({});
+    setPositions({});
     setResults([]);
     setRunError(null);
   }, []);
@@ -238,7 +252,9 @@ export function CopyComponentPanel() {
   if (clientLoading || contextLoading) {
     return (
       <main className="panel">
-        <p className="spinner">Connecting to Pages…</p>
+        <p className="spinner spinner--page" role="status">
+          Connecting to Pages…
+        </p>
       </main>
     );
   }
@@ -291,9 +307,15 @@ export function CopyComponentPanel() {
           <RenderingPicker
             renderings={renderings}
             names={names}
+            hints={hints}
             selectedUid={selectedUid}
             onSelect={setSelectedUid}
           />
+          {hintsError && renderings.length > 0 && (
+            <p className="option__meta">
+              Could not read component titles, so only names are shown. {hintsError}
+            </p>
+          )}
           <div className="actions">
             <button
               type="button"
@@ -346,12 +368,14 @@ export function CopyComponentPanel() {
       {stage === "placeholders" && subtree && (
         <>
           <PlaceholderPrompt
+            authoring={authoring}
+            language={context.language}
             sourceKey={subtree.root.placeholderKey}
             targets={targetPlaceholders}
             choices={choices}
-            onChange={(itemId, choice) =>
-              setChoices((prev) => ({ ...prev, [itemId]: choice }))
-            }
+            positions={positions}
+            onChange={changePlaceholder}
+            onPositionChange={changePosition}
             isLoading={placeholdersLoading}
           />
           {/* Available before the copy runs, so a wrong decision can be seen

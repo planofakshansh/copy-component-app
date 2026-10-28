@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   isDescendantKey,
   keysEqual,
+  planInsertion,
   rebasePrefix,
   relocateSubtree,
   remapUidsInKey,
+  renderingsInPlaceholder,
+  resolvePlaceholderKey,
   usedPlaceholderKeys,
 } from "./placeholders";
 import type { Rendering, RenderingSubtree } from "../types";
@@ -147,6 +150,114 @@ describe("relocateSubtree", () => {
     const relocated = relocateSubtree(subtree, "/footer", sequentialMinter());
     expect(relocated.root.dataSource).toBe("{D}");
     expect(relocated.root.parameters).toBe("a=1&b=2");
+  });
+
+  // A source rendering read from a delta can name a sibling on its own page.
+  // On the target that selector points at nothing, so it must not come along.
+  it("does not carry a delta position over to the target page", () => {
+    const subtree: RenderingSubtree = {
+      root: { ...rendering(CONTAINER_UID, "/main"), position: { before: "r[@uid='{X}']" } },
+      descendants: [{ ...rendering(CHILD_UID, `/main/c-${CONTAINER_UID}-0`), position: { after: "*" } }],
+    };
+    const relocated = relocateSubtree(subtree, "/footer", sequentialMinter());
+    expect(relocated.root).not.toHaveProperty("position");
+    expect(relocated.descendants[0]).not.toHaveProperty("position");
+  });
+});
+
+describe("resolvePlaceholderKey", () => {
+  it("keeps the source key for the same-placeholder choice", () => {
+    expect(resolvePlaceholderKey({ kind: "same" }, "/headless-main")).toBe("/headless-main");
+  });
+
+  it("uses the picked key otherwise", () => {
+    expect(resolvePlaceholderKey({ kind: "pick", placeholderKey: "/footer" }, "/headless-main")).toBe(
+      "/footer",
+    );
+  });
+});
+
+describe("renderingsInPlaceholder", () => {
+  const A = "{AAAA0001-0000-0000-0000-000000000000}";
+  const B = "{AAAA0002-0000-0000-0000-000000000000}";
+  const C = "{AAAA0003-0000-0000-0000-000000000000}";
+
+  it("returns what is directly in the placeholder, in order", () => {
+    const found = renderingsInPlaceholder(
+      [rendering(A, "/main"), rendering(C, "/footer"), rendering(B, "/main")],
+      "/main",
+    );
+    expect(found.map((r) => r.uid)).toEqual([A, B]);
+  });
+
+  it("matches the key however it is spelled", () => {
+    expect(renderingsInPlaceholder([rendering(A, "Headless-Main")], "/headless-main")).toHaveLength(1);
+  });
+
+  it("leaves out placeholders nested inside it", () => {
+    expect(renderingsInPlaceholder([rendering(A, `/main/inner-${B}-0`)], "/main")).toEqual([]);
+  });
+
+  it("ignores renderings that have no placeholder", () => {
+    expect(renderingsInPlaceholder([rendering(A, "")], "")).toEqual([]);
+  });
+});
+
+describe("planInsertion", () => {
+  const A = "{AAAA0001-0000-0000-0000-000000000000}";
+  const B = "{AAAA0002-0000-0000-0000-000000000000}";
+  const C = "{AAAA0003-0000-0000-0000-000000000000}";
+  const OTHER = "{AAAA0004-0000-0000-0000-000000000000}";
+  const page = [rendering(A, "/main"), rendering(B, "/main"), rendering(C, "/main"), rendering(OTHER, "/footer")];
+
+  it("goes last when the author asked for the end", () => {
+    expect(planInsertion(page, "/main", { kind: "end" })).toEqual({ slot: 4, total: 4 });
+  });
+
+  it("goes last when no position was given", () => {
+    expect(planInsertion(page, "/main", undefined)).toEqual({ slot: 4, total: 4 });
+  });
+
+  it("goes in front of the component the author picked", () => {
+    expect(planInsertion(page, "/main", { kind: "before", uid: B })).toEqual({
+      beforeUid: B,
+      slot: 2,
+      total: 4,
+    });
+  });
+
+  it("can go first", () => {
+    expect(planInsertion(page, "/main", { kind: "before", uid: A })).toMatchObject({ slot: 1 });
+  });
+
+  it("counts only the chosen placeholder", () => {
+    expect(planInsertion(page, "/footer", { kind: "end" })).toEqual({ slot: 2, total: 2 });
+  });
+
+  it("says nothing about position when the placeholder is empty", () => {
+    expect(planInsertion(page, "/nothing-here", { kind: "end" })).toEqual({});
+  });
+
+  it("reports the anchor as missing, and falls back to the end, when it has been removed", () => {
+    expect(
+      planInsertion(page, "/main", { kind: "before", uid: "{00000000-0000-0000-0000-000000000000}" }),
+    ).toEqual({ slot: 4, total: 4, anchorMissing: true });
+  });
+
+  // Inserting next to a component in some other placeholder would land the
+  // copy at an arbitrary place in this one.
+  it("treats an anchor that is in a different placeholder as missing", () => {
+    expect(planInsertion(page, "/main", { kind: "before", uid: OTHER })).toMatchObject({
+      anchorMissing: true,
+    });
+  });
+
+  it("finds the anchor however its uid is spelled, and returns the page's own spelling", () => {
+    const loose = B.replace(/[{}]/g, "").toLowerCase();
+    expect(planInsertion(page, "/main", { kind: "before", uid: loose })).toMatchObject({
+      beforeUid: B,
+      slot: 2,
+    });
   });
 });
 

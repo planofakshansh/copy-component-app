@@ -140,6 +140,20 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* A title or alt text — what the component says, which tells two of the same
+   component apart. Brighter than the meta line so it is what the eye lands on. */
+.option__hint {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.option__hint-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .badge {
   flex-shrink: 0;
   padding: 1px 6px;
@@ -243,6 +257,11 @@ body {
   border-left-color: var(--danger);
 }
 
+/* A card that holds a further question (e.g. a position) sets it apart from the one above. */
+.result > .section {
+  margin-top: 6px;
+}
+
 .result__steps {
   margin: 0;
   padding-left: 14px;
@@ -299,6 +318,106 @@ body {
 }
 
 .spinner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.spinner::before {
+  content: "";
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* The wait for the Pages handshake: nothing else is on screen yet, so it
+   takes the whole panel rather than reading like a stray line of text. */
+.spinner--page {
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  min-height: 60vh;
+  font-size: 15px;
+}
+
+.spinner--page::before {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner::before {
+    animation-duration: 2.4s;
+  }
+}
+
+/* The components already in a placeholder, with an insertion point above,
+   between and below them. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.stack__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.stack__index {
+  flex-shrink: 0;
+  min-width: 14px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.slot:hover {
+  background: var(--surface-hover);
+}
+
+.slot input {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.slot[data-selected="true"] {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 600;
 }

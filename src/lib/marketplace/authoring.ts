@@ -1,5 +1,5 @@
 import type { ClientSDK } from "@sitecore-marketplace-sdk/client";
-import type { PageSummary } from "../types";
+import type { FieldValue, PageSummary } from "../types";
 
 /**
  * Every call goes through the Marketplace SDK's Authoring GraphQL passthrough,
@@ -171,6 +171,52 @@ export class AuthoringClient {
   }
 
   /**
+   * The fields of several items in one round trip, aligned with `locators`
+   * (null where an item could not be read).
+   *
+   * Used to put a title or alt text next to a component, so it is a nicety:
+   * the caller treats a failure as "no labels", never as a blocker. Standard
+   * fields are excluded because the endpoint pages its field list and a
+   * template's own fields would otherwise compete with the ninety-odd that
+   * every item inherits.
+   */
+  async getItemFields(locators: ItemLocator[], language?: string): Promise<Array<FieldValue[] | null>> {
+    if (locators.length === 0) return [];
+
+    // `itemId` is typed ID and `path` String; a mismatched declaration fails
+    // variable validation before the query runs (see getItemById).
+    const args = locators
+      .map((locator, index) => `$k${index}: ${locator.by === "id" ? "ID!" : "String!"}`)
+      .join(", ");
+    const selections = locators
+      .map(
+        (locator, index) =>
+          `i${index}: item(where: { database: $db, ${locator.by === "id" ? "itemId" : "path"}: $k${index}, language: $language }) {
+            fields(excludeStandardFields: true) { nodes { name value } }
+          }`,
+      )
+      .join("\n");
+    const variables: Record<string, unknown> = { db: this.database, language };
+    locators.forEach((locator, index) => {
+      variables[`k${index}`] = locator.value;
+    });
+
+    const data = await this.graphql<Record<string, ItemFieldsRecord | null>>(
+      `query ItemFields($db: String!, $language: String, ${args}) { ${selections} }`,
+      variables,
+    );
+
+    return locators.map((_, index) => {
+      const item = data[`i${index}`];
+      if (!item) return null;
+      return (item.fields?.nodes ?? []).map((node) => ({
+        name: node.name,
+        value: node.value ?? "",
+      }));
+    });
+  }
+
+  /**
    * Both layout fields for a page, read in one round trip.
    *
    * There is no `presentationDetails` field on `Item` in the Authoring schema —
@@ -196,19 +242,6 @@ export class AuthoringClient {
       shared: data.item?.shared?.value ?? "",
       final: data.item?.final?.value ?? "",
     };
-  }
-
-  /** The raw `__Final Renderings` delta — what we append to and write back. */
-  async getFinalRenderings(pathOrId: string, language?: string): Promise<string> {
-    const data = await this.graphql<{ item: { field?: { value?: string } | null } | null }>(
-      `query FinalRenderings($path: String!, $db: String!, $language: String) {
-        item(where: { database: $db, path: $path, language: $language }) {
-          field(name: "__Final Renderings") { value }
-        }
-      }`,
-      { path: pathOrId, db: this.database, language },
-    );
-    return data.item?.field?.value ?? "";
   }
 
   async setFinalRenderings(itemId: string, value: string, language?: string): Promise<void> {
@@ -284,6 +317,16 @@ export interface LayoutFields {
   shared: string;
   /** `__Final Renderings` — the versioned delta applied on top of the shared layout. */
   final: string;
+}
+
+/** How to address an item: by id, or by content path. */
+export interface ItemLocator {
+  by: "id" | "path";
+  value: string;
+}
+
+interface ItemFieldsRecord {
+  fields?: { nodes?: Array<{ name: string; value?: string | null }> } | null;
 }
 
 export interface ItemRecord {

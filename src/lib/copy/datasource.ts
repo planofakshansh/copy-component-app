@@ -84,15 +84,21 @@ export function splitRelativePath(relativePath: string): { folders: string[]; na
  * ambiguous fast, so a collision is resolved by suffixing rather than
  * overwriting — a second copy of a component must never edit the first one's
  * content.
+ *
+ * The suffix reuses a separator the name already has. Sitecore's URL name
+ * encoding maps " " to "-", and it rejects a name holding both, since such a
+ * name could not be decoded back from its URL — so "Hero Banner" must become
+ * "Hero Banner 1", never "Hero Banner-1".
  */
 export function uniqueName(desired: string, existingNames: string[]): string {
   const taken = new Set(existingNames.map((n) => n.toLowerCase()));
   if (!taken.has(desired.toLowerCase())) return desired;
+  const separator = desired.includes(" ") ? " " : "-";
   for (let suffix = 1; suffix < 1000; suffix++) {
-    const candidate = `${desired}-${suffix}`;
+    const candidate = `${desired}${separator}${suffix}`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
-  return `${desired}-${Date.now()}`;
+  return `${desired}${separator}${Date.now()}`;
 }
 
 /** Datasource values that need resolving from an id to a path before classification. */

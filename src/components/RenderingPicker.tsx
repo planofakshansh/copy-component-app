@@ -1,12 +1,16 @@
 "use client";
 
-import type { Rendering } from "@/src/lib/types";
+import type { Rendering, RenderingHint } from "@/src/lib/types";
+import { describeDataSource } from "@/src/lib/describe/hints";
 import { normalizeGuid } from "@/src/lib/guid";
 import { collectSubtree } from "@/src/lib/layout/presentation";
+import { RenderingSummary } from "./RenderingSummary";
 
 interface Props {
   renderings: Rendering[];
   names: Map<string, string>;
+  /** Titles and alt text, by normalised uid — what tells two "Image"s apart. */
+  hints: Map<string, RenderingHint[]>;
   selectedUid: string | null;
   onSelect: (uid: string) => void;
 }
@@ -17,9 +21,10 @@ interface Props {
  * Pages cannot put a button on the component itself — a Marketplace app only
  * gets the context panel — so the panel has to make "which component" an
  * explicit choice. Nesting counts are shown because picking a container copies
- * everything inside it.
+ * everything inside it, and each component carries its title or image alt text
+ * because a page with three "Image"s is otherwise a guessing game.
  */
-export function RenderingPicker({ renderings, names, selectedUid, onSelect }: Props) {
+export function RenderingPicker({ renderings, names, hints, selectedUid, onSelect }: Props) {
   if (renderings.length === 0) {
     return <p className="notice">This page has no components to copy.</p>;
   }
@@ -43,14 +48,11 @@ export function RenderingPicker({ renderings, names, selectedUid, onSelect }: Pr
                     aria-pressed={isSelected(selectedUid, rendering.uid)}
                     onClick={() => onSelect(rendering.uid)}
                   >
-                    <span className="option__body">
-                      <span className="option__name">
-                        {names.get(rendering.renderingItemId) ?? "Component"}
-                      </span>
-                      <span className="option__meta">
-                        {describeDataSource(rendering.dataSource)}
-                      </span>
-                    </span>
+                    <RenderingSummary
+                      name={names.get(rendering.renderingItemId) ?? "Component"}
+                      hints={hints.get(normalizeGuid(rendering.uid)) ?? []}
+                      detail={describeDataSource(rendering.dataSource)}
+                    />
                     {nested > 0 && (
                       <span className="badge">+{nested} nested</span>
                     )}
@@ -85,11 +87,4 @@ function groupByPlaceholder(renderings: Rendering[]): Array<[string, Rendering[]
 
 function countNested(renderings: Rendering[], uid: string): number {
   return collectSubtree(renderings, uid)?.descendants.length ?? 0;
-}
-
-function describeDataSource(dataSource: string): string {
-  if (!dataSource) return "No datasource";
-  if (dataSource.startsWith("/")) return dataSource;
-  if (/^(query:|\$)/i.test(dataSource)) return `Dynamic datasource (${dataSource})`;
-  return "Datasource set";
 }

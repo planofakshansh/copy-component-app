@@ -1,6 +1,11 @@
-import { normalizeGuid } from "../guid";
+import { guidsEqual } from "../guid";
 import type { Rendering } from "../types";
-import { parseLayoutXml, renderingsForDevice } from "./layout-xml";
+import {
+  insertionIndex,
+  parseLayoutXml,
+  renderingsForDevice,
+  withoutDeltaMarks,
+} from "./layout-xml";
 
 /**
  * Resolve a page's effective layout from its two stored fields.
@@ -15,7 +20,12 @@ import { parseLayoutXml, renderingsForDevice } from "./layout-xml";
  *   only the attributes that changed — so attributes are overlaid one by one
  *   rather than the whole entry being swapped, or an unchanged datasource
  *   would be read as empty.
- * - A final entry with a new uid is an addition.
+ * - A final entry with a new uid is an addition. `p:before` / `p:after` say
+ *   where it goes; without either it lands at the end. Order is not cosmetic
+ *   here — it is what the position picker shows and what a copy is placed
+ *   against.
+ * - `<p:d />` removes a base entry; the entry must not be offered as a
+ *   component, or as a place to insert next to.
  * - Base entries the delta says nothing about survive untouched.
  */
 export function resolveLayout(
@@ -25,21 +35,22 @@ export function resolveLayout(
 ): Rendering[] {
   const base = renderingsForDevice(parseLayoutXml(sharedXml), deviceId);
   const delta = renderingsForDevice(parseLayoutXml(finalXml), deviceId);
-  if (delta.length === 0) return base;
 
-  const merged = base.map((rendering) => ({ ...rendering }));
-  const indexByUid = new Map(
-    merged.map((rendering, index) => [normalizeGuid(rendering.uid), index]),
-  );
+  const merged = base.filter((rendering) => !rendering.deleted).map(withoutDeltaMarks);
 
-  for (const override of delta) {
-    const existing = indexByUid.get(normalizeGuid(override.uid));
-    if (existing === undefined) {
-      merged.push({ ...override });
-      indexByUid.set(normalizeGuid(override.uid), merged.length - 1);
-      continue;
+  // Entries are applied in document order, as Sitecore does, so one may be
+  // positioned against another that an earlier entry added.
+  for (const entry of delta) {
+    const existing = merged.findIndex((rendering) => guidsEqual(rendering.uid, entry.uid));
+
+    if (entry.deleted) {
+      if (existing >= 0) merged.splice(existing, 1);
+    } else if (existing >= 0) {
+      merged[existing] = overlay(merged[existing], entry);
+    } else {
+      const at = insertionIndex(merged, (rendering) => rendering.uid, entry.position);
+      merged.splice(at >= 0 ? at : merged.length, 0, withoutDeltaMarks(entry));
     }
-    merged[existing] = overlay(merged[existing], override);
   }
 
   return merged;

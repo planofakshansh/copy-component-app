@@ -143,6 +143,12 @@ describe("uniqueName", () => {
   it("compares names case-insensitively", () => {
     expect(uniqueName("Promo", ["promo"])).toBe("Promo-1");
   });
+
+  it("never mixes a space and a hyphen, which Sitecore rejects", () => {
+    expect(uniqueName("Hero Banner", ["Hero Banner"])).toBe("Hero Banner 1");
+    expect(uniqueName("Hero Banner", ["Hero Banner", "Hero Banner 1"])).toBe("Hero Banner 2");
+    expect(uniqueName("Hero-Banner", ["Hero-Banner"])).toBe("Hero-Banner-1");
+  });
 });
 
 describe("needsPathResolution", () => {

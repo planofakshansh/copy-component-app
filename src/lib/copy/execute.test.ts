@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { executeCopy } from "./execute";
 import { parseLayoutXml } from "../layout/layout-xml";
+import { resolveLayout } from "../layout/merge";
 import type { AuthoringClient } from "../marketplace/authoring";
-import type { CopyRequest, PageSummary, Rendering, RenderingSubtree } from "../types";
+import type {
+  CopyRequest,
+  PageSummary,
+  PositionChoice,
+  Rendering,
+  RenderingSubtree,
+} from "../types";
 
 const SOURCE_PAGE = "/sitecore/content/Site/Home/About";
 const TARGET_PAGE = "/sitecore/content/Site/Home/Contact";
@@ -41,6 +48,7 @@ class FakeAuthoring {
   copies: Array<{ source: string; parent: string; name: string }> = [];
   creates: Array<{ parent: string; name: string; template: string }> = [];
   finalRenderings = "";
+  sharedRenderings = "";
   items = new Map<string, { itemId: string; path: string; template?: { templateId: string; name: string } }>();
   children = new Map<string, PageSummary[]>();
 
@@ -64,8 +72,8 @@ class FakeAuthoring {
     return this.children.get(parentId) ?? [];
   }
 
-  async getFinalRenderings() {
-    return this.finalRenderings;
+  async getLayoutFields() {
+    return { shared: this.sharedRenderings, final: this.finalRenderings };
   }
 
   async setFinalRenderings(itemId: string, value: string, language?: string) {
@@ -539,5 +547,155 @@ describe("executeCopy", () => {
     await executeCopy(authoring.asClient(), req);
 
     expect(authoring.writes[0].language).toBe("de-DE");
+  });
+});
+
+describe("executeCopy position within the placeholder", () => {
+  const DEVICE = "{FE5D7FDF-89C0-4D99-9AA3-B5FBD009C9F3}";
+  const A = "{AAAA0001-0000-0000-0000-000000000000}";
+  const B = "{AAAA0002-0000-0000-0000-000000000000}";
+  const C = "{AAAA0003-0000-0000-0000-000000000000}";
+  const ELSEWHERE = "{AAAA0004-0000-0000-0000-000000000000}";
+
+  /** A target page whose placeholder already holds three components, inherited from the base layout. */
+  function stackedTarget() {
+    const authoring = fakeWithLocalDataSource();
+    authoring.sharedRenderings = `<r xmlns:s="s"><d id="${DEVICE}">${[A, B, C]
+      .map((uid) => `<r uid="${uid}" s:id="{BBBB0000-0000-0000-0000-000000000000}" s:ph="/headless-main" />`)
+      .join("")}<r uid="${ELSEWHERE}" s:id="{BBBB0000-0000-0000-0000-000000000000}" s:ph="/headless-footer" /></d></r>`;
+    return authoring;
+  }
+
+  async function copyInto(
+    authoring: FakeAuthoring,
+    position: PositionChoice | undefined,
+    placeholder = "/headless-main",
+  ) {
+    const req = request({ root: rendering({ uid: CONTAINER }), descendants: [] }, placeholder);
+    req.targets[0].position = position;
+    const [result] = await executeCopy(authoring.asClient(), req);
+    const written = authoring.writes[0]?.value ?? "";
+    const order = resolveLayout(authoring.sharedRenderings, written)
+      .filter((r) => r.placeholderKey === placeholder)
+      .map((r) => r.uid);
+    return { result, written, order };
+  }
+
+  it("lands in front of the component the author picked", async () => {
+    const { order, result } = await copyInto(stackedTarget(), { kind: "before", uid: B });
+
+    expect(result.ok).toBe(true);
+    expect(order).toHaveLength(4);
+    expect(order[0]).toBe(A);
+    expect(order[2]).toBe(B);
+    expect(order[3]).toBe(C);
+    expect([A, B, C]).not.toContain(order[1]);
+  });
+
+  it("can land first in the placeholder", async () => {
+    const { order } = await copyInto(stackedTarget(), { kind: "before", uid: A });
+
+    expect(order.slice(1)).toEqual([A, B, C]);
+  });
+
+  it("goes last for the end choice, writing no position at all", async () => {
+    const { order, written } = await copyInto(stackedTarget(), { kind: "end" });
+
+    expect(order.slice(0, 3)).toEqual([A, B, C]);
+    expect(order).toHaveLength(4);
+    expect(written).not.toContain("p:before");
+  });
+
+  it("goes last when no position was given, as it always did", async () => {
+    const { order } = await copyInto(stackedTarget(), undefined);
+    expect(order.slice(0, 3)).toEqual([A, B, C]);
+  });
+
+  it("writes the position as a delta instruction, keeping the page's inheritance", async () => {
+    const { written } = await copyInto(stackedTarget(), { kind: "before", uid: B });
+
+    expect(written).toContain('p:p="1"');
+    const [copy] = parseLayoutXml(written).devices[0].renderings;
+    expect(copy.position?.before).toBe(`r[@uid='${B}']`);
+  });
+
+  it("states where the copy landed", async () => {
+    const { result } = await copyInto(stackedTarget(), { kind: "before", uid: B });
+
+    const added = result.steps.find((s) => s.kind === "write-layout");
+    expect(added?.label).toContain("position 2 of 4");
+    expect(added?.label).toContain("/headless-main");
+  });
+
+  it("states the position for the end too", async () => {
+    const { result } = await copyInto(stackedTarget(), { kind: "end" });
+    expect(result.steps.find((s) => s.kind === "write-layout")?.label).toContain("position 4 of 4");
+  });
+
+  it("does not mention a position when the placeholder had nothing to order against", async () => {
+    const { result } = await copyInto(new FakeAuthoring(), { kind: "end" });
+    expect(result.steps.find((s) => s.kind === "write-layout")?.label).not.toContain("position");
+  });
+
+  it("honours the position within a placeholder that is not the default one", async () => {
+    const { order } = await copyInto(stackedTarget(), { kind: "before", uid: ELSEWHERE }, "/headless-footer");
+    expect(order.slice(1)).toEqual([ELSEWHERE]);
+  });
+
+  it("finds an anchor the target page itself added in its own delta", async () => {
+    const authoring = stackedTarget();
+    const ADDED = "{AAAA0009-0000-0000-0000-000000000000}";
+    authoring.finalRenderings = `<r xmlns:p="p" xmlns:s="s" p:p="1"><d id="${DEVICE}"><r uid="${ADDED}" s:id="{BBBB0000-0000-0000-0000-000000000000}" s:ph="/headless-main" /></d></r>`;
+
+    const { order, written } = await copyInto(authoring, { kind: "before", uid: ADDED });
+
+    expect(order.slice(0, 3)).toEqual([A, B, C]);
+    expect(order[4]).toBe(ADDED);
+    // The earlier addition is still there, untouched, ahead of ours.
+    expect(parseLayoutXml(written).devices[0].renderings[0].uid).toBe(ADDED);
+  });
+
+  it("uses the target's own spelling of the anchor uid, not the one it was asked with", async () => {
+    const loose = B.replace(/[{}]/g, "").toLowerCase();
+    const { written } = await copyInto(stackedTarget(), { kind: "before", uid: loose });
+
+    expect(parseLayoutXml(written).devices[0].renderings[0].position?.before).toBe(`r[@uid='${B}']`);
+  });
+
+  describe("when the component to insert before has gone", () => {
+    it("still copies, at the end", async () => {
+      const { result, order } = await copyInto(stackedTarget(), {
+        kind: "before",
+        uid: "{00000000-0000-0000-0000-000000000000}",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(order.slice(0, 3)).toEqual([A, B, C]);
+      expect(order).toHaveLength(4);
+    });
+
+    it("says so, as a warning", async () => {
+      const { result } = await copyInto(stackedTarget(), {
+        kind: "before",
+        uid: "{00000000-0000-0000-0000-000000000000}",
+      });
+
+      const warning = result.steps.find((s) => s.warn);
+      expect(warning?.label).toContain("no longer");
+    });
+
+    it("treats a component deleted from the page's delta as gone", async () => {
+      const authoring = stackedTarget();
+      authoring.finalRenderings = `<r xmlns:p="p" xmlns:s="s" p:p="1"><d id="${DEVICE}"><r uid="${B}"><p:d /></r></d></r>`;
+
+      const { result } = await copyInto(authoring, { kind: "before", uid: B });
+
+      expect(result.steps.some((s) => s.warn)).toBe(true);
+    });
+  });
+
+  it("does not warn when everything went where it was asked", async () => {
+    const { result } = await copyInto(stackedTarget(), { kind: "before", uid: B });
+    expect(result.steps.some((s) => s.warn)).toBe(false);
   });
 });

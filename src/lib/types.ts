@@ -1,6 +1,31 @@
 /** Sitecore's Default device — used when a page has no layout to copy a device id from. */
 export const DEFAULT_DEVICE_ID = "{FE5D7FDF-89C0-4D99-9AA3-B5FBD009C9F3}";
 
+/**
+ * Where a rendering is slotted into a layout *delta*, as the raw `p:before` /
+ * `p:after` selectors Sitecore writes: `r[@uid='{…}']` for a sibling, or `*`
+ * for "first". These are delta instructions, not rendering attributes — they
+ * exist while a delta is read or written and never survive onto a resolved or
+ * copied rendering.
+ */
+export interface RenderingPosition {
+  before?: string;
+  after?: string;
+}
+
+/** What a component is "about", read from its datasource — enough to tell two of the same component apart. */
+export interface RenderingHint {
+  /** Where the text came from, e.g. "Title" or "Alt text". */
+  label: string;
+  text: string;
+}
+
+/** A single field of an item, as its raw stored value. */
+export interface FieldValue {
+  name: string;
+  value: string;
+}
+
 /** A single rendering instance on a page. */
 export interface Rendering {
   /** Instance uid, e.g. "{2E2C4B9B-...}". Unique per page. */
@@ -15,6 +40,10 @@ export interface Rendering {
   parameters: string;
   /** Any attributes we do not model explicitly, preserved verbatim on write. */
   extraAttributes: Record<string, string>;
+  /** Delta only: where this entry is inserted among its siblings. */
+  position?: RenderingPosition;
+  /** Delta only: the entry removes a rendering the base layout supplies (`<p:d />`). */
+  deleted?: boolean;
 }
 
 /** A rendering plus the renderings nested inside its own placeholders. */
@@ -55,6 +84,19 @@ export type PlaceholderChoice =
   /** Drop the subtree into a different placeholder that exists on the target. */
   | { kind: "pick"; placeholderKey: string };
 
+/**
+ * Where the copy lands among the components already in the chosen placeholder.
+ * Anchored on an existing component's uid rather than an index, so it keeps
+ * meaning the same thing if the page is edited between choosing and copying.
+ */
+export type PositionChoice =
+  /** After everything already there. */
+  | { kind: "end" }
+  /** Immediately in front of one existing component. */
+  | { kind: "before"; uid: string };
+
+export const POSITION_END: PositionChoice = { kind: "end" };
+
 export interface CopyRequest {
   source: {
     pageItemId: string;
@@ -67,6 +109,8 @@ export interface CopyRequest {
   targets: Array<{
     page: PageSummary;
     placeholder: PlaceholderChoice;
+    /** Defaults to the end of the placeholder, which is where copies always used to go. */
+    position?: PositionChoice;
   }>;
   language: string;
 }

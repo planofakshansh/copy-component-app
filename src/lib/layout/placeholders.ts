@@ -1,5 +1,6 @@
-import { normalizeGuid } from "../guid";
-import type { Rendering, RenderingSubtree } from "../types";
+import { guidsEqual, normalizeGuid } from "../guid";
+import type { PlaceholderChoice, PositionChoice, Rendering, RenderingSubtree } from "../types";
+import { withoutDeltaMarks } from "./layout-xml";
 
 /**
  * Nested placeholder keys embed the parent rendering's uid, e.g.
@@ -88,7 +89,9 @@ export function relocateSubtree(
       ? targetKey
       : rebasePrefix(rendering.placeholderKey, sourceRootKey, targetKey);
     return {
-      ...rendering,
+      // A delta position names a sibling on the *source* page; it means
+      // nothing on the target, where the copy's own position is decided.
+      ...withoutDeltaMarks(rendering),
       uid: uidMap.get(normalizeGuid(rendering.uid)) ?? rendering.uid,
       placeholderKey: remapUidsInKey(rebased, uidMap),
     };
@@ -119,4 +122,53 @@ export function usedPlaceholderKeys(renderings: Rendering[]): string[] {
     const depth = (k: string) => normalizeKey(k).split("/").length;
     return depth(a) - depth(b) || a.localeCompare(b);
   });
+}
+
+/** The placeholder a target page will actually receive the copy in. */
+export function resolvePlaceholderKey(choice: PlaceholderChoice, sourceKey: string): string {
+  return choice.kind === "same" ? sourceKey : choice.placeholderKey;
+}
+
+/**
+ * What sits directly in one placeholder, in the order it renders. Nested
+ * placeholders are separate keys and are not included.
+ */
+export function renderingsInPlaceholder(renderings: Rendering[], key: string): Rendering[] {
+  return renderings.filter((rendering) => rendering.placeholderKey && keysEqual(rendering.placeholderKey, key));
+}
+
+export interface InsertionPlan {
+  /** The existing rendering the copy goes in front of, spelled as the target page spells its uid. */
+  beforeUid?: string;
+  /** Where the copy ends up, e.g. 2 of 4. Absent when the placeholder was empty and there is nothing to order against. */
+  slot?: number;
+  total?: number;
+  /** The component the author chose to insert before is no longer in that placeholder. */
+  anchorMissing?: boolean;
+}
+
+/**
+ * Turn the author's position choice into something the layout writer can act
+ * on, checked against the target page *as it is now* rather than as it was
+ * when the choice was made.
+ *
+ * An anchor that has gone — someone edited the page in the meantime — falls
+ * back to the end and says so, rather than guessing a neighbour: inserting
+ * next to the wrong component is worse than inserting last.
+ */
+export function planInsertion(
+  resolved: Rendering[],
+  placeholderKey: string,
+  position: PositionChoice | undefined,
+): InsertionPlan {
+  const siblings = renderingsInPlaceholder(resolved, placeholderKey);
+  const total = siblings.length + 1;
+
+  if (position?.kind === "before") {
+    const index = siblings.findIndex((sibling) => guidsEqual(sibling.uid, position.uid));
+    if (index >= 0) return { beforeUid: siblings[index].uid, slot: index + 1, total };
+    return { slot: total, total, anchorMissing: true };
+  }
+
+  return siblings.length > 0 ? { slot: total, total } : {};
 }

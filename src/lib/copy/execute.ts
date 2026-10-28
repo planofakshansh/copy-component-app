@@ -1,6 +1,12 @@
 import { newGuid, normalizeGuid } from "../guid";
-import { appendRenderings, parseLayoutXml, primaryDeviceId } from "../layout/layout-xml";
-import { relocateSubtree } from "../layout/placeholders";
+import {
+  appendRenderings,
+  parseLayoutXml,
+  primaryDeviceId,
+  uidSelector,
+} from "../layout/layout-xml";
+import { resolveLayout } from "../layout/merge";
+import { planInsertion, relocateSubtree, resolvePlaceholderKey } from "../layout/placeholders";
 import type { AuthoringClient } from "../marketplace/authoring";
 import {
   DEFAULT_DEVICE_ID,
@@ -70,27 +76,47 @@ export async function executeCopy(
         dataSource: dataSourceMap.get(rendering.dataSource) ?? rendering.dataSource,
       }));
 
-      const placeholderKey =
-        target.placeholder.kind === "same"
-          ? request.source.subtree.root.placeholderKey
-          : target.placeholder.placeholderKey;
+      const placeholderKey = resolvePlaceholderKey(
+        target.placeholder,
+        request.source.subtree.root.placeholderKey,
+      );
 
       const relocated = relocateSubtree(rebound, placeholderKey, newGuid);
-      const existingXml = await authoring.getFinalRenderings(target.page.path, request.language);
+      const { shared, final: existingXml } = await authoring.getLayoutFields(
+        target.page.path,
+        request.language,
+      );
       const deviceId = deviceFor(existingXml);
 
-      const updated = appendRenderings(existingXml, deviceId, [
-        relocated.root,
-        ...relocated.descendants,
-      ]);
+      // Planned against the layout as it is right now: the author chose a
+      // position from a list read earlier, and the page may have moved on.
+      const plan = planInsertion(
+        resolveLayout(shared, existingXml, deviceId),
+        placeholderKey,
+        target.position,
+      );
+      const root = plan.beforeUid
+        ? { ...relocated.root, position: { before: uidSelector(plan.beforeUid) } }
+        : relocated.root;
+
+      const updated = appendRenderings(existingXml, deviceId, [root, ...relocated.descendants]);
       await authoring.setFinalRenderings(target.page.itemId, updated, request.language);
 
       const count = 1 + relocated.descendants.length;
       record({
         kind: "write-layout",
-        label: `Added ${count} rendering${count === 1 ? "" : "s"} to ${placeholderKey}`,
+        label: `Added ${count} rendering${count === 1 ? "" : "s"} to ${placeholderKey}${
+          plan.slot ? ` (position ${plan.slot} of ${plan.total})` : ""
+        }`,
         detail: target.page.path,
       });
+      if (plan.anchorMissing) {
+        record({
+          kind: "write-layout",
+          label: "The component you chose to insert before is no longer in that placeholder — added at the end instead",
+          warn: true,
+        });
+      }
 
       results.push({ targetPath: target.page.path, ok: true, steps });
     } catch (error) {
