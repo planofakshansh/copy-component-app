@@ -131,6 +131,8 @@ export interface CopyStep {
 
 export interface CopyResult {
   targetPath: string;
+  /** The target page's id — what Pages navigates by. */
+  targetItemId: string;
   ok: boolean;
   steps: CopyStep[];
   error?: string;

@@ -118,10 +118,16 @@ export async function executeCopy(
         });
       }
 
-      results.push({ targetPath: target.page.path, ok: true, steps });
+      results.push({
+        targetPath: target.page.path,
+        targetItemId: target.page.itemId,
+        ok: true,
+        steps,
+      });
     } catch (error) {
       results.push({
         targetPath: target.page.path,
+        targetItemId: target.page.itemId,
         ok: false,
         steps,
         error: error instanceof Error ? error.message : String(error),

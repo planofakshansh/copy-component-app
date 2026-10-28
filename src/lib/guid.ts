@@ -14,6 +14,23 @@ export function guidsEqual(a: string, b: string): boolean {
   return normalizeGuid(a) === normalizeGuid(b);
 }
 
+/**
+ * Write `value` in the same form as `sample` — braced or bare, hyphenated or
+ * not, upper or lower case.
+ *
+ * Pages has its own preference, and it is not the registry form the Authoring
+ * API echoes. Handing an id back to Pages in the form it reported its own ids
+ * in is the one form known to work.
+ */
+export function formatGuidLike(value: string, sample: string): string {
+  if (!isGuid(value) || !isGuid(sample)) return value;
+  const trimmed = sample.trim();
+  let formatted = normalizeGuid(value);
+  if (!trimmed.startsWith("{")) formatted = formatted.slice(1, -1);
+  if (!trimmed.includes("-")) formatted = formatted.replace(/-/g, "");
+  return trimmed === trimmed.toLowerCase() ? formatted.toLowerCase() : formatted;
+}
+
 /** True when the string is a guid in any of the forms Sitecore accepts. */
 export function isGuid(value: string): boolean {
   return /^[0-9a-fA-F]{32}$/.test(value.replace(/[^0-9a-fA-F]/g, ""));

@@ -9,6 +9,7 @@ import { SchemaCheck } from "./SchemaCheck";
 import type { TraceInput } from "@/src/lib/copy/trace";
 import { executeCopy } from "@/src/lib/copy/execute";
 import { findSiteRoot } from "@/src/lib/copy/site-root";
+import { formatGuidLike } from "@/src/lib/guid";
 import { collectSubtree, parsePresentationDetails } from "@/src/lib/layout/presentation";
 import { resolveLayout } from "@/src/lib/layout/merge";
 import { keysEqual, usedPlaceholderKeys } from "@/src/lib/layout/placeholders";
@@ -44,6 +45,7 @@ export function CopyComponentPanel() {
   const [layoutError, setLayoutError] = useState<string | null>(null);
   const [results, setResults] = useState<CopyResult[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
+  const [navigateError, setNavigateError] = useState<string | null>(null);
 
   const authoring = useMemo(
     () => (client ? new AuthoringClient(client, contextId) : null),
@@ -154,6 +156,7 @@ export function CopyComponentPanel() {
     setPositions({});
     setResults([]);
     setRunError(null);
+    setNavigateError(null);
     setFetchedRenderings([]);
     setLayoutError(null);
   }, [context?.pageId, context?.language]);
@@ -247,7 +250,25 @@ export function CopyComponentPanel() {
     setPositions({});
     setResults([]);
     setRunError(null);
+    setNavigateError(null);
   }, []);
+
+  // Moving the canvas moves the page this panel copies from, which is fine
+  // once the copy is done: the panel starts over on the page the author opened.
+  const goToPage = useCallback(
+    async (itemId: string) => {
+      if (!client || !context) return;
+      setNavigateError(null);
+      try {
+        await client.mutate("pages.context", {
+          params: { itemId: formatGuidLike(itemId, context.pageId), language: context.language },
+        });
+      } catch (error) {
+        setNavigateError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [client, context],
+  );
 
   if (clientLoading || contextLoading) {
     return (
@@ -280,6 +301,8 @@ export function CopyComponentPanel() {
       </main>
     );
   }
+
+  const copied = results.filter((result) => result.ok);
 
   return (
     <main className="panel">
@@ -402,9 +425,23 @@ export function CopyComponentPanel() {
       {stage === "done" && (
         <>
           {runError && <p className="notice notice--error">{runError}</p>}
-          <ResultList results={results} />
+          <ResultList results={results} onGoTo={copied.length > 1 ? goToPage : undefined} />
+          {navigateError && (
+            <p className="notice notice--error">
+              Could not open the page in Pages. {navigateError}
+            </p>
+          )}
           <SchemaCheck authoring={authoring} trace={trace} />
           <div className="actions">
+            {copied.length === 1 && (
+              <button
+                type="button"
+                className="button"
+                onClick={() => goToPage(copied[0].targetItemId)}
+              >
+                Go to page
+              </button>
+            )}
             <button type="button" className="button button--primary" onClick={startOver}>
               Copy another
             </button>

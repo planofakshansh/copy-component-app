@@ -7,7 +7,13 @@ import type { CopyResult } from "@/src/lib/types";
  * outcome — Sitecore gives us no transaction across pages — so the panel
  * states plainly which pages took the copy and which did not.
  */
-export function ResultList({ results }: { results: CopyResult[] }) {
+interface Props {
+  results: CopyResult[];
+  /** Offered on each copied page when given; a single copy is opened from the panel's own actions instead. */
+  onGoTo?: (itemId: string) => void;
+}
+
+export function ResultList({ results, onGoTo }: Props) {
   if (results.length === 0) return null;
 
   const failed = results.filter((r) => !r.ok).length;
@@ -27,6 +33,15 @@ export function ResultList({ results }: { results: CopyResult[] }) {
         >
           <span className="option__name">{result.targetPath.split("/").pop()}</span>
           <span className="option__meta">{result.targetPath}</span>
+          {result.ok && onGoTo && (
+            <button
+              type="button"
+              className="linkbutton result__goto"
+              onClick={() => onGoTo(result.targetItemId)}
+            >
+              Go to page
+            </button>
+          )}
 
           {result.error && <p className="notice notice--error">{result.error}</p>}
 
