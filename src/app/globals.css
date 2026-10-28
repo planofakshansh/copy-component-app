@@ -214,7 +214,11 @@ body {
   color: var(--accent-text);
 }
 
+/* Restates the accent: the plain `.button:hover` rule outranks
+   `.button--primary` and would otherwise swap in the grey surface, leaving
+   white text on a near-white button. */
 .button--primary:hover:not(:disabled) {
+  background: var(--accent);
   filter: brightness(1.08);
 }
 
